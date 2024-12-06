@@ -39,7 +39,7 @@ log() {
 # Function to filter UIDs based on package names
 uid_filter() {
 [ -f "${scripts_dir}/uids.list" ] && rm "${scripts_dir}/uids.list"
-uid=""; uids=""
+uid=""; uids=()
 for package_name in ${package_list[@]}; do
   uid=$(busybox awk -v package="${package_name}" '$1 ~ package {print $2}' /data/system/packages.list)
   [ -n "${uid}" ] && uids+=("${uid}") &&\
@@ -138,28 +138,36 @@ fi
 
 case "${proxy_mode}" in
   "blacklist")
-    for appid in ${6}; do
-      ${3} -t mangle -A ${4}_LOCAL -m owner --uid-owner ${appid} -p tcp -j RETURN
-      ${3} -t mangle -A ${4}_LOCAL -m owner --uid-owner ${appid} -p udp ! --dport 53 -j RETURN
-    done
-    ${3} -t mangle -A ${4}_LOCAL -j MARK --set-mark ${fwmark}
+    if [ ${#uids[@]} -gt 0 ]; then
+      for appid in ${6}; do
+        ${3} -t mangle -A ${4}_LOCAL -m owner --uid-owner ${appid} -p tcp -j RETURN
+        ${3} -t mangle -A ${4}_LOCAL -m owner --uid-owner ${appid} -p udp ! --dport 53 -j RETURN
+      done
+      ${3} -t mangle -A ${4}_LOCAL -j MARK --set-mark ${fwmark}
+    else
+      # When the blacklist array is empty, route all traffic through the proxy.
+      ${3} -t mangle -A ${4}_LOCAL -j MARK --set-mark ${fwmark}
+    fi
     ;;
   "whitelist")
-    for appid in ${6}; do
-      ${3} -t mangle -A ${4}_LOCAL -m owner --uid-owner ${appid} -p tcp -j MARK --set-mark ${fwmark}
-      ${3} -t mangle -A ${4}_LOCAL -m owner --uid-owner ${appid} -p udp -j MARK --set-mark ${fwmark}
-    done
-    if [ -n "${AIDs}" ]; then
-      for AID in ${AIDs[*]}; do
-        ${3} -t mangle -A ${4}_LOCAL -m owner --uid-owner ${AID} -p tcp -j MARK --set-mark ${fwmark}
-        ${3} -t mangle -A ${4}_LOCAL -m owner --uid-owner ${AID} -p udp -j MARK --set-mark ${fwmark}
+    if [ ${#uids[@]} -gt 0 ]; then
+      for appid in ${6}; do
+        ${3} -t mangle -A ${4}_LOCAL -m owner --uid-owner ${appid} -p tcp -j MARK --set-mark ${fwmark}
+        ${3} -t mangle -A ${4}_LOCAL -m owner --uid-owner ${appid} -p udp -j MARK --set-mark ${fwmark}
       done
+      if [ -n "${AIDs}" ]; then
+        for AID in ${AIDs[*]}; do
+          ${3} -t mangle -A ${4}_LOCAL -m owner --uid-owner ${AID} -p tcp -j MARK --set-mark ${fwmark}
+          ${3} -t mangle -A ${4}_LOCAL -m owner --uid-owner ${AID} -p udp -j MARK --set-mark ${fwmark}
+        done
+      fi
     else
-      log Error "Invalid proxy_mode: ${proxy_mode}"
+      # When the whitelist array is empty, route all traffic through the proxy.
+      ${3} -t mangle -A ${4}_LOCAL -j MARK --set-mark ${fwmark}
     fi
     ;;
   *)
-    log Error "Invalid proxy_mode: ${proxy_mode}"
+    log Error "proxy_mode incorrect" >> "${scripts_dir}/run.log"
     ;;
 esac
 
