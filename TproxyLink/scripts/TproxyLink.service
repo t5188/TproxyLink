@@ -49,12 +49,13 @@ done
 
 # Function to start the proxy
 start_TproxyLink() {
-if pidof ${bin_box} > /dev/null 2>&1; then
-    log Info "Close existing processes $(pidof ${bin_box})"
-    stop_TproxyLink
-fi
 if [ -f "${bin_box}" ]; then
   log info "---welcome---" > "${scripts_dir}/run.log"
+    if pidof ${bin_box} > /dev/null 2>&1; then
+        log Info "Close existing processes $(pidof ${bin_box})"
+        stop_TproxyLink
+        log info "---restart---" > "${scripts_dir}/run.log"
+    fi
   log info "slot$(getprop ro.boot.slot_suffix)" >> "${scripts_dir}/run.log"
   chmod 755 ${bin_box}
   chown root:net_admin ${bin_box}
