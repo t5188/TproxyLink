@@ -4,7 +4,7 @@ scripts_dir=$(dirname ${scripts})
 parent_dir=$(dirname ${scripts_dir})
 
 source ${scripts_dir}/settings.ini
-chain_name="${bin_box##*/}"
+chain_name="BOX_XRAY"
 
 # check iptables_version
 iptables_version=$(iptables --version | busybox awk '/^iptables/ {print $2}')
@@ -42,7 +42,7 @@ uid_filter() {
 uid=""; uids=()
 for package_name in ${package_list[@]}; do
   uid=$(busybox awk -v package="${package_name}" '$1 ~ package {print $2}' /data/system/packages.list)
-  [ -n "${uid}" ] && uids+=("${uid}") &&\
+  [ -n "${uid}" ] && uids+=("${uid}") && \
   echo "${package_name}: ${uid}" >> ${scripts_dir}/uids.list
 done
 }
@@ -182,15 +182,14 @@ ${3} -t mangle -A DIVERTSV -j ACCEPT
 ${3} -t mangle -A PREROUTING -j ${4}_EXTERNAL
 ${3} -t mangle -I PREROUTING -p tcp -m socket -j DIVERTSV
 ${3} -t mangle -A OUTPUT -j ${4}_LOCAL
+log Info "All $(echo "${4}" | awk '{print $1}') chains have been created" >> "${scripts_dir}/run.log"
 }
 
 # Function to execute proxy rules
 run_iptables_rules() {
 iptables_rules ip "${table}" "${IPV}" "${chain_name}" "${intranet[*]}" "${uids[*]}"
-log Info "add iptables -4 rules" >> "${scripts_dir}/run.log"
 if [ "${ip6tables_switch}" = true ]; then
   iptables_rules "ip -6" "$(( ${table} * 2 ))" "${IP6V}" "${chain_name}6" "${intranet6[*]}" "${uids[*]}"
-  log Info "add iptables -6 rules" >> "${scripts_dir}/run.log"
 fi
 }
 
@@ -199,27 +198,50 @@ del_iptables_rules() {
 ${1} rule del fwmark "${fwmark}" table ${2} pref $(( ${2} * 10 ))
 ${1} route del local default dev lo table ${2}
 ${1} route flush table ${2}
-# First, delete the reference chain, otherwise the custom chain cannot be deleted.
-${3} -t mangle -D PREROUTING -j ${4}_EXTERNAL
-${3} -t mangle -D PREROUTING -p tcp -m socket -j DIVERTSV
-${3} -t mangle -D OUTPUT -j ${4}_LOCAL
-# Secondly, delete the custom rules of the custom chain.
-${3} -t mangle -F ${4}_EXTERNAL
-${3} -t mangle -F DIVERTSV
-${3} -t mangle -F ${4}_LOCAL
-# Finally, delete the custom chain.
-${3} -t mangle -X ${4}_EXTERNAL
-${3} -t mangle -X DIVERTSV
-${3} -t mangle -X ${4}_LOCAL
+while true; do
+    # Preload the chain rules in the mangle table into a variable
+    IPTABLES_DUMP=$(${3} -t mangle -L -nv)
+
+    # Remove references
+    if echo "$IPTABLES_DUMP" | grep -q "${4}_EXTERNAL"; then
+        ${3} -t mangle -D PREROUTING -j ${4}_EXTERNAL
+    fi
+    if echo "$IPTABLES_DUMP" | grep -q "DIVERTSV"; then
+        ${3} -t mangle -D PREROUTING -p tcp -m socket -j DIVERTSV
+    fi
+    if echo "$IPTABLES_DUMP" | grep -q "${4}_LOCAL"; then
+        ${3} -t mangle -D OUTPUT -j ${4}_LOCAL
+    fi
+
+    # Flush custom chains
+    for chain in "${4}_EXTERNAL" "DIVERTSV" "${4}_LOCAL"; do
+        if ${3} -t mangle -L $chain -nv &>/dev/null; then
+            ${3} -t mangle -F $chain
+        fi
+    done
+
+    # Delete custom chains
+    for chain in "${4}_EXTERNAL" "DIVERTSV" "${4}_LOCAL"; do
+        if ${3} -t mangle -L $chain -nv &>/dev/null; then
+            ${3} -t mangle -X $chain
+        fi
+    done
+
+    # Confirm all chains have been deleted
+    if ! echo "$IPTABLES_DUMP" | grep -q -E "${4}_EXTERNAL|DIVERTSV|${4}_LOCAL"; then
+        log Info "All $(echo "${4}" | awk '{print $1}') chains have been deleted" >> "${scripts_dir}/run.log"
+        break
+    fi
+
+    sleep 1  # Delay to avoid frequent looping
+done
 }
 
 # Function to execute delete proxy rules
 run_del_iptables_rules() {
 del_iptables_rules ip "${table}" "${IPV}" "${chain_name}"
-log Info "del iptables -4 rules" >> "${scripts_dir}/run.log"
 if [ "${ip6tables_switch}" = true ]; then
   del_iptables_rules "ip -6" "$(( ${table} * 2 ))" "${IP6V}" "${chain_name}6"
-  log Info "del iptables -6 rules" >> "${scripts_dir}/run.log"
 fi
 }
 
@@ -253,13 +275,18 @@ quic="disable"
 disable_quic() {
 ${1} ${2} OUTPUT -p udp --dport 443 -m owner ! --gid-owner ${box_group} -j REJECT
 ${1} ${2} OUTPUT -p udp --dport 80 -m owner ! --gid-owner ${box_group} -j REJECT
+if [ "${2}" = "-D" ]; then
+  while ${1} -C OUTPUT -p udp --dport 443 -m owner ! --gid-owner ${box_group} -j REJECT || ${1} -C OUTPUT -p udp --dport 80 -m owner ! --gid-owner ${box_group} -j REJECT; do
+    del_disable_quic
+  done
+fi
 }
 
 run_disable_quic() {
 if [ "${quic}" = "disable" ]; then
-  disable_quic "${IPV}" "-A"
+  disable_quic "${IPV}" "-I"
   if [ "${ip6tables_switch}" = true ]; then
-  disable_quic "${IP6V}" "-A"
+  disable_quic "${IP6V}" "-I"
   fi
 fi
 }
@@ -275,7 +302,8 @@ fi
 
 # version
 version() {
-version=$(${bin_box} version | head -n 1 | awk '{print $3}')
+version_box=$(${bin_box} version | head -n 1 | awk '{print $3}')
+version_xray=$(${bin_xray} version | head -n 1 | awk '{print $2}')
 }
 
 description() {
@@ -283,9 +311,10 @@ local symbol=$1
 local event=$2
 version
 prop_file="/data/adb/modules/TproxyLink/module.prop"
-core_name="${bin_box##*/}"
+core_name_box="${bin_box##*/}"
+core_name_xray="${bin_xray##*/}"
 current_time=$(date "+[%m.%d %H:%M]")
-sed -i "/description/c\description=${current_time} ${symbol} ${core_name} ${version} ${network_mode} ${event}" "${prop_file}"
+sed -i "/description/c\description=${current_time} ${symbol} ${core_name_box} ${version_box} work with ${core_name_xray} ${version_xray} ${network_mode} ${event}" "${prop_file}"
 log Info "${symbol} ${network_mode} ${event}" >> "${scripts_dir}/run.log"
 }
 
