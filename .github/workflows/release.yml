@@ -1,4 +1,4 @@
-name: TproxyLink-v1.0
+name: TproxyLink-v1.1
 
 on:
   workflow_dispatch:
