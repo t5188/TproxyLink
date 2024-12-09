@@ -1,7 +1,7 @@
 id=TproxyLink
 name=TproxyLink
 version=v1.1
-versionCode=20241208
+versionCode=20241209
 author=Tony
-description=Created on 12 08, 2024.
+description=Created on 12 09, 2024.
 updateJson=https://github.com/t5188/TproxyLink/raw/main/update.json
